@@ -116,24 +116,20 @@ class RideTheBus:
             return
         
         newCard = self.deck.pop()
-        correct = 0
+        correct = False
 
-        if self.getval(newCard) == self.getval(card):
-            self.score = 0
+        current_val = self.getval(card)
+        drawn_val = self.getval(newCard)
+        
+        if highlow == "higher":
+            correct = drawn_val > current_val
+        elif highlow == "lower":
+            correct = drawn_val < current_val
 
-        elif highlow in ("h", "higher"):
-            if self.getval(newCard) > self.getval(card):
-                self.score += 1
-                correct = 1
-            else:
-                self.score = 0
+        # Equal card is always incorrect
+        if drawn_val == current_val:
+            correct = False
 
-        elif highlow in ("l", "lower"):
-            if self.getval(newCard) < self.getval(card):
-                self.score += 1
-                correct = 1
-            else:
-                self.score = 0
         
         self.replace(card, newCard)
         return correct
