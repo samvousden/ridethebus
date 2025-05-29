@@ -4,10 +4,9 @@ import random
 import matplotlib.pyplot as plt
 from ride_bus_env import RideBusEnv
 
+from keras.saving import register_keras_serializable
 
-
-
-
+# --- Config ---
 env = RideBusEnv(verbose=False)
 num_actions = env.action_space.n
 state_shape = env.observation_space.shape
@@ -21,24 +20,47 @@ max_episodes = 1000
 min_episodes_before_stop = 100
 max_steps = 20
 target_score = 12
-target_update_freq = 10
+tau = 0.005  # soft target update factor
 
-def build_model():
-    return tf.keras.Sequential([
-        tf.keras.layers.Input(shape=state_shape),
-        tf.keras.layers.Lambda(lambda x: x / 13.0),
-        tf.keras.layers.Dense(256, activation='relu'),
-        tf.keras.layers.Dense(256, activation='relu'),
-        tf.keras.layers.Dense(num_actions)
+# --- Dueling DQN Architecture ---
+@register_keras_serializable()
+def normalize_input(x):
+    return x / 13.0
+
+@register_keras_serializable()
+def compute_advantage_mean(a):
+    return tf.reduce_mean(a, axis=1, keepdims=True)
+
+def build_dueling_model(input_shape, num_actions):
+    inputs = tf.keras.Input(shape=input_shape)
+    x = tf.keras.layers.Lambda(normalize_input, name="normalize_input")(inputs)
+    x = tf.keras.layers.Dense(256, activation='relu')(x)
+    x = tf.keras.layers.Dense(256, activation='relu')(x)
+
+    value = tf.keras.layers.Dense(1)(x)
+    advantage = tf.keras.layers.Dense(num_actions)(x)
+
+    advantage_mean = tf.keras.layers.Lambda(
+        compute_advantage_mean,
+        output_shape=(1,),
+        name="advantage_mean"
+    )(advantage)
+
+    q_values = tf.keras.layers.Add()([
+        value,
+        tf.keras.layers.Subtract()([advantage, advantage_mean])
     ])
 
-model = build_model()
-target_model = build_model()
+    return tf.keras.Model(inputs=inputs, outputs=q_values)
+
+model = build_dueling_model(state_shape, num_actions)
+target_model = build_dueling_model(state_shape, num_actions)
 target_model.set_weights(model.get_weights())
 
 optimizer = tf.keras.optimizers.Adam(learning_rate=learning_rate)
 loss_fn = tf.keras.losses.MeanSquaredError()
 
+# --- Replay Buffer ---
 buffer = []
 buffer_capacity = 10000
 
@@ -62,6 +84,7 @@ def sample_from_buffer():
         dones.astype(np.float32)
     )
 
+# --- Training Loop ---
 all_rewards = []
 
 for episode in range(max_episodes):
@@ -71,7 +94,6 @@ for episode in range(max_episodes):
 
     for step in range(max_steps):
         state_input = np.expand_dims(state, axis=0).astype(np.float32) / 13.0
-
         if np.random.rand() < epsilon:
             action = np.random.randint(num_actions)
         else:
@@ -109,8 +131,9 @@ for episode in range(max_episodes):
     avg_reward = np.mean(all_rewards[-100:])
     epsilon = max(epsilon * epsilon_decay, epsilon_min)
 
-    if (episode + 1) % target_update_freq == 0:
-        target_model.set_weights(model.get_weights())
+    # Soft update of target network
+    for target_var, main_var in zip(target_model.trainable_variables, model.trainable_variables):
+        target_var.assign((1 - tau) * target_var + tau * main_var)
 
     if (episode + 1) % 10 == 0 or episode == 0:
         print(f"Ep {episode+1}: Reward = {total_reward}, Avg(100) = {avg_reward:.2f}, Eps = {epsilon:.2f}")
@@ -120,9 +143,10 @@ for episode in range(max_episodes):
         print("✅ Stopping: Agent reached target performance.")
         break
 
-model.save("ridebus_dqn_model.keras")
+# --- Save Model ---
+model.save("ridebus_dueling_dqn_model.keras")
 
-# Plot rewards
+# --- Plot Rewards ---
 plt.figure(figsize=(10, 5))
 plt.plot(all_rewards, label='Reward per Episode', color='blue')
 plt.axhline(y=0, color='gray', linestyle='--')
@@ -146,7 +170,7 @@ if len(all_rewards) >= 50:
     plt.tight_layout()
     plt.show()
 
-# --- Evaluation (Summary Only) ---
+ # --- Evaluation (Summary Only) ---
 print("\n🔍 Final Evaluation Summary (10 episodes):")
 eval_rewards = []
 for i in range(10):
